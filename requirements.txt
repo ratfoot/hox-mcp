@@ -1,0 +1,4 @@
+mcp[cli]
+gget
+ffq
+requests

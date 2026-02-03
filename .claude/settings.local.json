@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:www.grosenicklab.org)",
+      "mcp__hox-bio__get_study_info",
+      "Bash(.venv/bin/python:*)",
+      "Bash(pkill:*)",
+      "Bash(pgrep:*)",
+      "Bash(source .venv/bin/activate)",
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "mcp__hox-bio__list_runs",
+      "mcp__hox-bio__approve_manifest"
+    ]
+  }
+}
