@@ -158,6 +158,7 @@ const Components = {
       } else if (m.status === 'importing') {
         actions = `<span class="text-muted" style="font-size:12px"><span class="spinner"></span> Importing...</span>`;
       }
+      actions += ` <button class="btn btn-sm btn-outline manifest-action-export" data-name="${escapeAttr(m.name)}">Export JSON</button>`;
 
       return `
       <div class="manifest-card">

@@ -141,6 +141,64 @@ def api_list_manifests(name: Optional[str] = Query(None)):
     return json.loads(result)
 
 
+@app.get("/api/manifests/{name}/export")
+def api_export_manifest(name: str):
+    """Export a manifest as a clean JSON for hox import iteration."""
+    from fastapi.responses import JSONResponse
+
+    path = MANIFEST_DIR / f"{name}.json"
+    if not path.exists():
+        return JSONResponse({"error": f"Manifest '{name}' not found"}, status_code=404)
+
+    with open(path) as f:
+        manifest = json.load(f)
+
+    # Build a clean export: flat list of runs grouped by study
+    studies = []
+    for entry in manifest.get("accessions", []):
+        runs_data = entry.get("metadata", {}).get("runs", [])
+        study = {
+            "study_accession": entry.get("accession", ""),
+            "title": entry.get("title", entry.get("metadata", {}).get("title", "")),
+            "runs": [],
+        }
+        for r in runs_data:
+            if isinstance(r, dict):
+                study["runs"].append({
+                    "accession": r.get("accession", ""),
+                    "spots": r.get("spots", ""),
+                    "bases": r.get("bases", ""),
+                    "strategy": r.get("strategy", ""),
+                    "platform": r.get("platform", ""),
+                })
+            elif isinstance(r, str):
+                study["runs"].append({"accession": r})
+        # Fallback: if no detailed runs, use the accession list
+        if not study["runs"]:
+            for acc in entry.get("runs", []):
+                study["runs"].append({"accession": acc})
+        studies.append(study)
+
+    export = {
+        "manifest": name,
+        "description": manifest.get("description", ""),
+        "status": manifest.get("status", ""),
+        "tags": manifest.get("tags", {}),
+        "total_runs": manifest.get("total_runs", 0),
+        "studies": studies,
+        "run_accessions": [
+            r["accession"] for s in studies for r in s["runs"]
+        ],
+    }
+
+    return JSONResponse(
+        content=export,
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}.json"',
+        },
+    )
+
+
 @app.post("/api/manifests/{name}/approve")
 def api_approve_manifest(name: str):
     result = approve_manifest(name)

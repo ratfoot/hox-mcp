@@ -455,6 +455,14 @@
       loadManifestsList(); // refresh
       return;
     }
+
+    // Export JSON
+    const btnExport = e.target.closest('.manifest-action-export');
+    if (btnExport) {
+      const name = btnExport.dataset.name;
+      window.open(`/api/manifests/${encodeURIComponent(name)}/export`, '_blank');
+      return;
+    }
   });
 
   // --- Console helpers ---
