@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NCBI SRA Manifest Curator</title>
+  <link rel="stylesheet" href="/static/css/style.css?v=5">
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <span class="logo">HOX</span>
+      <span class="header-title">NCBI SRA Manifest Curator</span>
+    </div>
+    <div class="header-right">
+      <button id="btn-manifests" class="btn btn-outline">Manifests</button>
+    </div>
+  </header>
+
+  <main class="main">
+    <!-- Console Panel -->
+    <section class="console" id="console">
+      <div class="console-lines" id="console-lines"></div>
+    </section>
+
+    <!-- Search Controls -->
+    <section class="search-controls">
+      <div class="db-chips" id="db-chips">
+        <button class="chip active" data-db="sra">NCBI SRA</button>
+        <button class="chip" data-db="gds">NCBI GEO</button>
+        <button class="chip disabled" disabled>ENA</button>
+        <button class="chip disabled" disabled>DDBJ</button>
+      </div>
+      <div class="search-filters">
+        <select id="year-filter">
+          <option value="">All years</option>
+          <option value="2025">2025</option>
+          <option value="2024">2024</option>
+          <option value="2023">2023</option>
+          <option value="2022">2022</option>
+          <option value="2021">2021</option>
+          <option value="2020">2020</option>
+          <option value="2019">2019</option>
+          <option value="2018">2018</option>
+          <option value="2015-2017">2015-2017</option>
+          <option value="2010-2014">2010-2014</option>
+          <option value="pre-2010">Pre-2010</option>
+        </select>
+        <label class="filter-checkbox">
+          <input type="checkbox" id="has-reads-filter" checked>
+          <span>Has reads only</span>
+        </label>
+      </div>
+      <div class="search-bar">
+        <input type="text" id="search-input" placeholder="Search studies (e.g. RNA-seq human cancer)" autocomplete="off">
+        <button id="btn-search" class="btn btn-primary">Search</button>
+      </div>
+    </section>
+
+    <!-- Results -->
+    <section class="results" id="results"></section>
+
+    <!-- Staged Banner -->
+    <div class="staged-banner hidden" id="staged-banner">
+      <span id="staged-count">0 runs staged</span>
+      <button id="btn-open-manifest" class="btn btn-primary">Open Manifest Editor</button>
+    </div>
+  </main>
+
+  <!-- Manifest Editor Modal -->
+  <div class="modal-overlay hidden" id="modal-overlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Manifest Editor</h2>
+        <button class="modal-close" id="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="manifest-name">Manifest Name</label>
+          <input type="text" id="manifest-name" placeholder="e.g. mdd_rnaseq_v1">
+        </div>
+        <div class="form-group">
+          <label for="manifest-desc">Description</label>
+          <input type="text" id="manifest-desc" placeholder="What is this data for?">
+        </div>
+        <div class="form-group">
+          <label for="manifest-tags">Tags <span class="hint">(key=value, comma separated)</span></label>
+          <input type="text" id="manifest-tags" placeholder="disease=MDD,tissue=brain">
+        </div>
+        <div class="staged-studies" id="staged-studies"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-approve" class="btn btn-success">Approve Manifest</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Manifests List Modal -->
+  <div class="modal-overlay hidden" id="manifests-overlay">
+    <div class="modal" style="width:720px">
+      <div class="modal-header">
+        <h2>Manifests</h2>
+        <button class="modal-close" id="manifests-close">&times;</button>
+      </div>
+      <div class="modal-body" id="manifests-list"></div>
+    </div>
+  </div>
+
+  <!-- Approval Banner -->
+  <div class="approval-banner hidden" id="approval-banner">
+    <div class="approval-content">
+      <span class="approval-icon">&#10003;</span>
+      <span id="approval-text">Manifest approved!</span>
+      <button id="btn-load-hox" class="btn btn-primary">Load to HOX</button>
+      <button id="btn-dismiss-approval" class="btn btn-outline">Dismiss</button>
+    </div>
+  </div>
+
+  <script src="/static/js/state.js?v=5"></script>
+  <script src="/static/js/api.js?v=5"></script>
+  <script src="/static/js/components.js?v=5"></script>
+  <script src="/static/js/app.js?v=5"></script>
+</body>
+</html>

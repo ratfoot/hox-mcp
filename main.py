@@ -38,16 +38,85 @@ MANIFEST_DIR = Path.home() / ".hox" / "manifests"
 MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
 
 
+import time
+
+def _ncbi_post(url: str, data: dict, retries: int = 2, timeout: int = 60):
+    """POST to NCBI with retry on 429 rate-limit."""
+    for attempt in range(retries + 1):
+        resp = requests.post(url, data=data, timeout=timeout)
+        if resp.status_code == 429 and attempt < retries:
+            time.sleep(1)
+            continue
+        resp.raise_for_status()
+        return resp
+    return resp
+
+
 # ============================================================================
 # DISCOVERY - Search and get study/sample metadata
 # ============================================================================
+
+# Known SRA library strategies for smart query building
+_STRATEGY_TERMS = {
+    "rna-seq": "RNA-Seq", "rnaseq": "RNA-Seq", "rna seq": "RNA-Seq",
+    "wgs": "WGS", "whole genome": "WGS",
+    "wes": "WXS", "exome": "WXS", "whole exome": "WXS",
+    "chip-seq": "ChIP-Seq", "chipseq": "ChIP-Seq",
+    "atac-seq": "ATAC-seq", "atacseq": "ATAC-seq",
+    "bisulfite": "Bisulfite-Seq", "bs-seq": "Bisulfite-Seq",
+    "scrna": "RNA-Seq", "scrnaseq": "RNA-Seq", "single cell rna": "RNA-Seq",
+    "hi-c": "Hi-C", "hic": "Hi-C",
+    "clip-seq": "CLIP-Seq", "clipseq": "CLIP-Seq",
+    "mirna": "miRNA-Seq", "mirna-seq": "miRNA-Seq",
+}
+
+
+def _build_sra_query(query: str, organism: str, year: Optional[str]) -> str:
+    """Build an optimized SRA query with field tags for strategy terms."""
+    terms = []
+    remaining = query.lower()
+
+    # Extract known strategy terms and convert to [Strategy] field tags
+    strategy_found = None
+    for pattern, strategy in sorted(_STRATEGY_TERMS.items(), key=lambda x: -len(x[0])):
+        if pattern in remaining:
+            strategy_found = strategy
+            remaining = remaining.replace(pattern, " ")
+            break
+
+    # Clean up remaining keywords
+    keywords = [w.strip() for w in remaining.split() if w.strip()]
+
+    # Build query parts
+    if strategy_found:
+        terms.append(f'"{strategy_found}"[Strategy]')
+    if keywords:
+        terms.append(" AND ".join(f"{kw}[All Fields]" for kw in keywords))
+    if organism:
+        terms.append(f'"{organism}"[Organism]')
+    if year:
+        terms.append(_year_to_pdat(year))
+
+    return " AND ".join(terms)
+
+
+def _year_to_pdat(year: str) -> str:
+    """Convert year filter string to NCBI PDAT range."""
+    if year == "pre-2010":
+        return "1900:2009[PDAT]"
+    elif "-" in year:
+        start, end = year.split("-")
+        return f"{start}:{end}[PDAT]"
+    return f"{year}[PDAT]"
+
 
 @mcp.tool()
 def search_studies(
     query: str,
     database: str = "gds",
     organism: str = "Homo sapiens",
-    limit: int = 20
+    limit: int = 20,
+    year: Optional[str] = None
 ) -> str:
     """
     Search NCBI GEO/SRA for studies matching keywords.
@@ -60,6 +129,7 @@ def search_studies(
         database: NCBI database - "gds" for GEO DataSets, "sra" for SRA (default: gds)
         organism: Filter by organism (default: "Homo sapiens", use "" for all)
         limit: Maximum results to return (default: 20, max: 100)
+        year: Year filter (e.g., "2024", "2020-2022", "pre-2010")
 
     Returns:
         JSON with matching studies including accessions, titles, and summaries
@@ -70,14 +140,18 @@ def search_studies(
         search_studies("single cell brain", database="sra", limit=50)
     """
     try:
-        # Build search query
+        if database == "sra":
+            return _search_sra(query, organism, limit, year)
+
+        # GDS search — already returns study-level results
         search_terms = [query]
         if organism:
             search_terms.append(f'"{organism}"[Organism]')
+        if year:
+            search_terms.append(_year_to_pdat(year))
 
         full_query = " AND ".join(search_terms)
 
-        # Search NCBI using E-utilities
         search_url = f"{NCBI_BASE}/esearch.fcgi"
         search_params = {
             "db": database,
@@ -105,7 +179,6 @@ def search_studies(
                 "message": "No studies found. Try broader search terms."
             }, indent=2)
 
-        # Fetch summaries for the IDs
         summary_url = f"{NCBI_BASE}/esummary.fcgi"
         summary_params = {
             "db": database,
@@ -142,6 +215,114 @@ def search_studies(
             "query": query,
             "hint": "Try simpler search terms or check NCBI connectivity"
         })
+
+
+def _search_sra(query: str, organism: str, limit: int, year: Optional[str]) -> str:
+    """SRA-specific search: builds smart query, paginates, deduplicates by study."""
+
+    full_query = _build_sra_query(query, organism, year)
+    target = min(limit, 100)
+
+    # First, get total count and WebEnv for pagination
+    search_url = f"{NCBI_BASE}/esearch.fcgi"
+    search_params = {
+        "db": "sra",
+        "term": full_query,
+        "retmax": 0,
+        "retmode": "json",
+        "usehistory": "y",
+        "sort": "relevance",
+    }
+
+    resp = requests.get(search_url, params=search_params, timeout=30)
+    resp.raise_for_status()
+    search_data = resp.json()
+    result = search_data.get("esearchresult", {})
+    total_count = int(result.get("count", 0))
+    webenv = result.get("webenv", "")
+    query_key = result.get("querykey", "")
+
+    if total_count == 0:
+        return json.dumps({
+            "query": query, "database": "sra", "organism": organism,
+            "total_found": 0, "studies": [],
+            "message": "No studies found. Try broader search terms.",
+            "resolved_query": full_query,
+        }, indent=2)
+
+    # Paginate through results, collecting unique studies
+    study_map = {}  # study_acc -> aggregated dict
+    page_size = 200
+    retstart = 0
+    max_fetched = min(total_count, 2000)  # cap total experiments scanned
+
+    while len(study_map) < target and retstart < max_fetched:
+        # Fetch a page of IDs
+        fetch_params = {
+            "db": "sra",
+            "term": full_query,
+            "retmax": page_size,
+            "retstart": retstart,
+            "retmode": "json",
+            "usehistory": "y",
+            "WebEnv": webenv,
+            "query_key": query_key,
+            "sort": "relevance",
+        }
+        resp = requests.get(search_url, params=fetch_params, timeout=30)
+        resp.raise_for_status()
+        id_list = resp.json().get("esearchresult", {}).get("idlist", [])
+
+        if not id_list:
+            break
+
+        # Fetch summaries for this page
+        summary_url = f"{NCBI_BASE}/esummary.fcgi"
+        resp = requests.get(summary_url, params={
+            "db": "sra", "id": ",".join(id_list), "retmode": "json"
+        }, timeout=60)
+        resp.raise_for_status()
+        doc_sums = resp.json().get("result", {})
+
+        for uid in id_list:
+            if uid not in doc_sums:
+                continue
+            parsed = _parse_entrez_summary(doc_sums[uid], "sra")
+            if not parsed:
+                continue
+
+            study_acc = parsed.get("accession", "")
+            if not study_acc:
+                continue
+
+            if study_acc in study_map:
+                s = study_map[study_acc]
+                s["runs"] += parsed.get("runs", 0)
+                if not s.get("title") and parsed.get("title"):
+                    s["title"] = parsed["title"]
+                if not s.get("strategy") and parsed.get("strategy"):
+                    s["strategy"] = parsed["strategy"]
+                if not s.get("platform") and parsed.get("platform"):
+                    s["platform"] = parsed["platform"]
+            else:
+                study_map[study_acc] = {
+                    **parsed,
+                    "runs": parsed.get("runs", 0),
+                }
+
+        retstart += page_size
+
+    # Sort by run count descending
+    studies = list(study_map.values())
+    studies.sort(key=lambda x: x.get("runs", 0), reverse=True)
+    studies = studies[:target]
+
+    return json.dumps({
+        "query": query, "database": "sra", "organism": organism,
+        "total_found": total_count, "returned": len(studies),
+        "studies": studies, "resolved_query": full_query,
+        "next_step": "Use get_study_info(accession) or list_runs(accession) for details"
+    }, indent=2)
 
 
 def _parse_entrez_summary(item: dict, database: str) -> dict:
@@ -408,59 +589,88 @@ def list_runs(study_accession: str) -> str:
         list_runs("SRP123456")
     """
     try:
-        if _is_sra_accession(study_accession):
-            # Use ffq for SRA/GEO metadata
-            data = _fetch_sra_metadata(study_accession)
-            runs = []
-
-            def extract_runs(obj):
-                if isinstance(obj, dict):
-                    acc = obj.get("accession", "")
-                    if acc.startswith(("SRR", "ERR", "DRR")):
-                        runs.append({
-                            "accession": acc,
-                            "sample": str(obj.get("sample_title", obj.get("title", "")))[:60],
-                            "strategy": obj.get("library_strategy", ""),
-                            "source": obj.get("library_source", ""),
-                            "platform": obj.get("platform", ""),
-                        })
-                    for v in obj.values():
-                        extract_runs(v)
-                elif isinstance(obj, list):
-                    for item in obj:
-                        extract_runs(item)
-
-            extract_runs(data)
-        else:
-            df = gget.info(study_accession)
-            if df is None or (hasattr(df, 'empty') and df.empty):
-                return json.dumps({"error": "No data found", "study": study_accession})
-
-            if hasattr(df, 'to_dict'):
-                records = df.to_dict(orient='records')
-            else:
-                records = [df] if isinstance(df, dict) else df
-
-            runs = []
-            for record in records if isinstance(records, list) else [records]:
-                if isinstance(record, dict):
-                    acc = record.get('accession', record.get('run_accession', ''))
-                    if acc.startswith(('SRR', 'ERR', 'DRR')):
-                        runs.append({
-                            "accession": acc,
-                            "sample": str(record.get('sample_title', record.get('title', '')))[:60],
-                            "strategy": record.get('library_strategy', ''),
-                            "source": record.get('library_source', ''),
-                            "platform": record.get('platform', record.get('instrument_platform', '')),
-                        })
-
-        return json.dumps({
-            "study": study_accession,
-            "total_runs": len(runs),
-            "runs": runs
-        }, indent=2)
+        return _list_runs_entrez(study_accession)
     except Exception as e:
         return json.dumps({"error": str(e), "study": study_accession})
+
+
+def _list_runs_entrez(study_accession: str) -> str:
+    """List runs via NCBI Entrez — fast, 2 HTTP calls, works on new studies."""
+
+    # Search SRA for experiments belonging to this study
+    search_url = f"{NCBI_BASE}/esearch.fcgi"
+    resp = requests.get(search_url, params={
+        "db": "sra",
+        "term": f"{study_accession}[Study]",
+        "retmax": 500,
+        "retmode": "json",
+    }, timeout=30)
+    resp.raise_for_status()
+    result = resp.json().get("esearchresult", {})
+    id_list = result.get("idlist", [])
+
+    if not id_list:
+        return json.dumps({
+            "study": study_accession,
+            "total_runs": 0,
+            "runs": [],
+            "message": "No experiments found for this study."
+        }, indent=2)
+
+    # Fetch summaries in batches (NCBI URL length limit)
+    summary_url = f"{NCBI_BASE}/esummary.fcgi"
+    doc_sums = {}
+    batch_size = 200
+    for i in range(0, len(id_list), batch_size):
+        batch = id_list[i:i + batch_size]
+        resp = _ncbi_post(summary_url, {
+            "db": "sra",
+            "id": ",".join(batch),
+            "retmode": "json",
+        })
+        doc_sums.update(resp.json().get("result", {}))
+
+    runs = []
+    seen = set()
+
+    for uid in id_list:
+        if uid not in doc_sums:
+            continue
+        item = doc_sums[uid]
+        exp_xml = item.get("expxml", "")
+        runs_xml = item.get("runs", "")
+
+        # Extract experiment-level metadata
+        title = _extract_xml_text(exp_xml, "Title") or ""
+        platform = _extract_xml_attr(exp_xml, "Platform", "instrument_model") or ""
+        strategy = _extract_xml_attr(exp_xml, "Library_descriptor", "LIBRARY_STRATEGY") or ""
+        source = _extract_xml_attr(exp_xml, "Library_descriptor", "LIBRARY_SOURCE") or ""
+
+        # Extract individual runs from the runs XML
+        if runs_xml:
+            try:
+                root = ET.fromstring(f"<root>{runs_xml}</root>")
+                for run_el in root.findall(".//Run"):
+                    run_acc = run_el.get("acc", "")
+                    if run_acc and run_acc not in seen:
+                        seen.add(run_acc)
+                        runs.append({
+                            "accession": run_acc,
+                            "sample": title[:60],
+                            "strategy": strategy,
+                            "source": source,
+                            "platform": platform,
+                            "spots": run_el.get("total_spots", ""),
+                            "bases": run_el.get("total_bases", ""),
+                        })
+            except ET.ParseError:
+                pass
+
+    return json.dumps({
+        "study": study_accession,
+        "total_runs": len(runs),
+        "runs": runs
+    }, indent=2)
 
 
 @mcp.tool()

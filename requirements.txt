@@ -2,3 +2,5 @@ mcp[cli]
 gget
 ffq
 requests
+fastapi
+uvicorn[standard]

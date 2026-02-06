@@ -11,7 +11,10 @@
       "Bash(pip install:*)",
       "Bash(python:*)",
       "mcp__hox-bio__list_runs",
-      "mcp__hox-bio__approve_manifest"
+      "mcp__hox-bio__approve_manifest",
+      "Bash(curl:*)",
+      "Bash(python3:*)",
+      "WebFetch(domain:www.ncbi.nlm.nih.gov)"
     ]
   }
 }
